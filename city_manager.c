@@ -153,8 +153,8 @@ void update_symlink(const char *district)
     char link_name[512];
     char target[512];
 
-    snprintf(link_name, sizeof(link_name), "active_reports-%s", district);
-    snprintf(target,    sizeof(target),    "%s/%s/reports.dat", DISTRICTS_DIR, district);
+    snprintf(link_name, sizeof(link_name), "%s/active_reports-%s",DISTRICTS_DIR, district);
+    snprintf(target,    sizeof(target),    "%s/reports.dat",  district);
 
     struct stat lst;
     if (lstat(link_name, &lst) == 0) {
@@ -621,6 +621,3 @@ int main(int argc, char *argv[])
 
     return 0;
 }
-
-
-// token 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
