@@ -5,6 +5,8 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>
+#include <signal.h>
 #include <time.h>
 
 /* ── Constants ───────────────────────────────────────────────────────────── */
@@ -13,6 +15,7 @@
 #define CATEGORY_LEN  32
 #define DESC_LEN      128
 #define DISTRICTS_DIR "districts"
+#define PID_FILE      ".monitor_pid"
 
 /* ── Report struct ───────────────────────────────────────────────────────── */
 
@@ -87,11 +90,6 @@ void log_action(const char *district, const char *role,
 }
 
 /* ── Permission bits to string ───────────────────────────────────────────── */
-/*
- * Converts the 9 permission bits into a string like "rw-rw-r--".
- * Checks each bit individually using the sys/stat.h macros.
- * out must be at least 10 bytes (9 chars + null terminator).
- */
 void mode_to_str(mode_t mode, char out[10])
 {
     out[0] = (mode & S_IRUSR) ? 'r' : '-';
@@ -107,11 +105,6 @@ void mode_to_str(mode_t mode, char out[10])
 }
 
 /* ── Permission check ────────────────────────────────────────────────────── */
-/*
- * Checks whether the declared role has the required access on a file.
- * Manager = owner bits, Inspector = group bits.
- * Returns 1 if ok, 0 if denied (also prints an error).
- */
 int check_permission(const char *path, const char *role, int need_read, int need_write)
 {
     struct stat st;
@@ -124,7 +117,6 @@ int check_permission(const char *path, const char *role, int need_read, int need
         if (need_read  && !(m & S_IRUSR)) ok = 0;
         if (need_write && !(m & S_IWUSR)) ok = 0;
     } else {
-        /* inspector = group bits */
         if (need_read  && !(m & S_IRGRP)) ok = 0;
         if (need_write && !(m & S_IWGRP)) ok = 0;
     }
@@ -142,28 +134,20 @@ int check_permission(const char *path, const char *role, int need_read, int need
 }
 
 /* ── Symlink helpers ─────────────────────────────────────────────────────── */
-
-/*
- * Creates active_reports-<district> -> districts/<district>/reports.dat
- * Uses lstat() so we detect the symlink itself, not its target.
- * Also warns if an existing symlink is dangling.
- */
 void update_symlink(const char *district)
 {
     char link_name[512];
     char target[512];
 
-    snprintf(link_name, sizeof(link_name), "%s/active_reports-%s",DISTRICTS_DIR, district);
+    snprintf(link_name, sizeof(link_name), "%s/active_reports-%s", DISTRICTS_DIR, district);
     snprintf(target,    sizeof(target),    "%s/reports.dat",  district);
 
     struct stat lst;
     if (lstat(link_name, &lst) == 0) {
-        /* already exists — remove it so we can recreate */
         unlink(link_name);
     }
     symlink(target, link_name);
 
-    /* check for dangling link */
     struct stat fst;
     if (stat(link_name, &fst) < 0) {
         fprintf(stderr, "WARNING: symlink '%s' is dangling (target does not exist yet).\n",
@@ -172,7 +156,6 @@ void update_symlink(const char *district)
 }
 
 /* ── Print one report ────────────────────────────────────────────────────── */
-
 void print_report(const Report *r)
 {
     char tsbuf[64];
@@ -193,7 +176,6 @@ void print_report(const Report *r)
    ════════════════════════════════════════════════════════════════════════════ */
 
 /* ── add ─────────────────────────────────────────────────────────────────── */
-
 void cmd_add(const char *district, const char *role, const char *user)
 {
     ensure_district(district);
@@ -201,7 +183,6 @@ void cmd_add(const char *district, const char *role, const char *user)
     char rpath[512];
     snprintf(rpath, sizeof(rpath), "%s/%s/reports.dat", DISTRICTS_DIR, district);
 
-    /* both roles may add — check write permission on reports.dat if it exists */
     if (!check_permission(rpath, role, 0, 1)) exit(1);
 
     Report r;
@@ -235,12 +216,82 @@ void cmd_add(const char *district, const char *role, const char *user)
     close(fd);
 
     update_symlink(district);
-    log_action(district, role, user, "add");
     printf("Report %d added to district '%s'.\n", r.id, district);
+
+    /* Phase 2: Notify the monitor process */
+    int monitor_pid = -1;
+    int pid_fd = open(PID_FILE, O_RDONLY);
+    int notified = 0;
+
+    if (pid_fd >= 0) {
+        char pid_buf[32] = {0};
+        int bytes_read = read(pid_fd, pid_buf, sizeof(pid_buf) - 1);
+        if (bytes_read > 0) {
+            monitor_pid = atoi(pid_buf);
+            if (monitor_pid > 0 && kill(monitor_pid, SIGUSR1) == 0) {
+                notified = 1;
+            }
+        }
+        close(pid_fd);
+    }
+
+    char action_log[128];
+    if (notified) {
+        snprintf(action_log, sizeof(action_log), "add (monitor notified successfully)");
+    } else {
+        snprintf(action_log, sizeof(action_log), "add (monitor could not be informed)");
+    }
+    log_action(district, role, user, action_log);
+}
+
+/* ── remove_district (Phase 2) ───────────────────────────────────────────── */
+void cmd_remove_district(const char *district, const char *role, const char *user)
+{
+    if (strcmp(role, "manager") != 0) {
+        fprintf(stderr, "ERROR: only managers can remove districts.\n");
+        exit(1);
+    }
+
+    char target_dir[512];
+    snprintf(target_dir, sizeof(target_dir), "%s/%s", DISTRICTS_DIR, district);
+
+    /* Verify district directory actually exists before trying to delete */
+    struct stat st;
+    if (stat(target_dir, &st) < 0) {
+        fprintf(stderr, "ERROR: District '%s' does not exist.\n", district);
+        exit(1);
+    }
+
+    /* Use fork and exec to run: rm -rf districts/<district> */
+    pid_t pid = fork();
+    if (pid < 0) {
+        perror("fork");
+        exit(1);
+    } else if (pid == 0) {
+        /* Child process */
+        execlp("rm", "rm", "-rf", target_dir, NULL);
+        /* If execlp returns, it failed */
+        perror("execlp");
+        exit(1);
+    } else {
+        /* Parent process */
+        int status;
+        waitpid(pid, &status, 0);
+        
+        if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+            printf("District '%s' and all its contents have been removed.\n", district);
+            
+            /* Remove the corresponding active_reports-* symlink */
+            char link_name[512];
+            snprintf(link_name, sizeof(link_name), "%s/active_reports-%s", DISTRICTS_DIR, district);
+            unlink(link_name);
+        } else {
+            fprintf(stderr, "ERROR: Failed to remove district '%s'.\n", district);
+        }
+    }
 }
 
 /* ── list ────────────────────────────────────────────────────────────────── */
-
 void cmd_list(const char *district, const char *role, const char *user)
 {
     char rpath[512];
@@ -254,7 +305,6 @@ void cmd_list(const char *district, const char *role, const char *user)
         return;
     }
 
-    /* file info line — required by spec */
     char sym[10];
     mode_to_str(st.st_mode, sym);
     char tmbuf[64];
@@ -277,12 +327,10 @@ void cmd_list(const char *district, const char *role, const char *user)
     close(fd);
 
     if (count == 0) printf("(no reports)\n");
-
     log_action(district, role, user, "list");
 }
 
 /* ── view ────────────────────────────────────────────────────────────────── */
-
 void cmd_view(const char *district, const char *role, const char *user, int report_id)
 {
     char rpath[512];
@@ -304,14 +352,11 @@ void cmd_view(const char *district, const char *role, const char *user, int repo
     }
     close(fd);
 
-    if (!found)
-        fprintf(stderr, "Report %d not found in district '%s'.\n", report_id, district);
-
+    if (!found) fprintf(stderr, "Report %d not found in district '%s'.\n", report_id, district);
     log_action(district, role, user, "view");
 }
 
 /* ── remove_report ───────────────────────────────────────────────────────── */
-
 void cmd_remove_report(const char *district, const char *role,
                         const char *user, int report_id)
 {
@@ -325,7 +370,6 @@ void cmd_remove_report(const char *district, const char *role,
 
     if (!check_permission(rpath, role, 1, 1)) exit(1);
 
-    /* read all records into memory */
     struct stat st;
     if (stat(rpath, &st) < 0) { fprintf(stderr, "No reports found.\n"); exit(1); }
     int total = (int)(st.st_size / sizeof(Report));
@@ -337,17 +381,14 @@ void cmd_remove_report(const char *district, const char *role,
     if (fd < 0) { perror("open reports.dat"); free(records); exit(1); }
     read(fd, records, total * sizeof(Report));
 
-    /* find the record and shift everything after it one position left */
     int found = 0;
     for (int i = 0; i < total; i++) {
         if (records[i].id == report_id) {
             found = 1;
-            /* seek to position i and write records i+1 ... total-1 */
             lseek(fd, (off_t)i * sizeof(Report), SEEK_SET);
             for (int j = i + 1; j < total; j++) {
                 write(fd, &records[j], sizeof(Report));
             }
-            /* shrink the file by one record */
             ftruncate(fd, (off_t)(total - 1) * sizeof(Report));
             break;
         }
@@ -365,7 +406,6 @@ void cmd_remove_report(const char *district, const char *role,
 }
 
 /* ── update_threshold ────────────────────────────────────────────────────── */
-
 void cmd_update_threshold(const char *district, const char *role,
                            const char *user, int value)
 {
@@ -379,7 +419,6 @@ void cmd_update_threshold(const char *district, const char *role,
     char cfg[512];
     snprintf(cfg, sizeof(cfg), "%s/%s/district.cfg", DISTRICTS_DIR, district);
 
-    /* spec requires: verify permissions are still exactly 640 before writing */
     struct stat st;
     if (stat(cfg, &st) == 0) {
         mode_t perms = st.st_mode & 0777;
@@ -409,14 +448,6 @@ void cmd_update_threshold(const char *district, const char *role,
 }
 
 /* ── filter (AI-assisted functions) ─────────────────────────────────────── */
-
-/*
- * Splits "field:operator:value" into its three parts.
- * Returns 1 on success, 0 if the format is wrong.
- *
- * AI-assisted (Claude). Reviewed and modified — added explicit null-termination
- * and enlarged the working buffer. See ai_usage.md.
- */
 int parse_condition(const char *input, char *field, char *op, char *value)
 {
     char buf[256];
@@ -425,32 +456,23 @@ int parse_condition(const char *input, char *field, char *op, char *value)
 
     char *p = buf;
 
-    /* first token: field */
     char *colon1 = strchr(p, ':');
     if (!colon1) return 0;
     *colon1 = '\0';
     strncpy(field, p, 63); field[63] = '\0';
     p = colon1 + 1;
 
-    /* second token: operator */
     char *colon2 = strchr(p, ':');
     if (!colon2) return 0;
     *colon2 = '\0';
     strncpy(op, p, 7); op[7] = '\0';
     p = colon2 + 1;
 
-    /* third token: value (rest of string) */
     strncpy(value, p, 127); value[127] = '\0';
 
     return 1;
 }
 
-/*
- * Returns 1 if report *r satisfies the condition, 0 otherwise.
- *
- * AI-assisted (Claude). Reviewed and modified — changed atoi to atol for
- * timestamp to avoid 32-bit overflow on 64-bit time_t. See ai_usage.md.
- */
 int match_condition(Report *r, const char *field, const char *op, const char *value)
 {
     if (strcmp(field, "severity") == 0) {
@@ -488,7 +510,6 @@ int match_condition(Report *r, const char *field, const char *op, const char *va
 }
 
 /* ── filter ──────────────────────────────────────────────────────────────── */
-
 void cmd_filter(const char *district, const char *role, const char *user,
                 int cond_count, char **conditions)
 {
@@ -497,7 +518,6 @@ void cmd_filter(const char *district, const char *role, const char *user,
 
     if (!check_permission(rpath, role, 1, 0)) exit(1);
 
-    /* check for dangling symlink using lstat */
     char link_name[512];
     snprintf(link_name, sizeof(link_name), "active_reports-%s", district);
     struct stat lst;
@@ -507,7 +527,6 @@ void cmd_filter(const char *district, const char *role, const char *user,
             fprintf(stderr, "WARNING: symlink '%s' is dangling.\n", link_name);
     }
 
-    /* parse all conditions upfront */
     char fields[8][64], ops[8][8], values[8][128];
     int nconds = 0;
     for (int i = 0; i < cond_count && nconds < 8; i++) {
@@ -521,7 +540,6 @@ void cmd_filter(const char *district, const char *role, const char *user,
     int fd = open(rpath, O_RDONLY);
     if (fd < 0) { perror("open reports.dat"); exit(1); }
 
-    /* read records one by one and test all conditions */
     Report r;
     int found = 0;
     while (read(fd, &r, sizeof(r)) == (ssize_t)sizeof(r)) {
@@ -541,12 +559,10 @@ void cmd_filter(const char *district, const char *role, const char *user,
     close(fd);
 
     if (!found) printf("No reports matched the given conditions.\n");
-
     log_action(district, role, user, "filter");
 }
 
 /* ── usage ───────────────────────────────────────────────────────────────── */
-
 void usage(void)
 {
     fprintf(stderr,
@@ -557,12 +573,12 @@ void usage(void)
         "  city_manager --role <role> --user <user> --remove_report <district> <id>\n"
         "  city_manager --role <role> --user <user> --update_threshold <district> <value>\n"
         "  city_manager --role <role> --user <user> --filter <district> <cond> [<cond>...]\n"
+        "  city_manager --role <role> --user <user> --remove_district <district>\n"
     );
     exit(1);
 }
 
 /* ── main ────────────────────────────────────────────────────────────────── */
-
 int main(int argc, char *argv[])
 {
     const char *role     = NULL;
@@ -596,12 +612,15 @@ int main(int argc, char *argv[])
             command  = "update_threshold";
             district = argv[++i];
             extra    = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--remove_district") == 0 && i + 1 < argc) {
+            command  = "remove_district";
+            district = argv[++i];
         } else if (strcmp(argv[i], "--filter") == 0 && i + 1 < argc) {
             command      = "filter";
             district     = argv[++i];
             filter_start = i + 1;
             filter_count = argc - filter_start;
-            i = argc; /* remaining args are filter conditions */
+            i = argc; 
         }
     }
 
@@ -617,6 +636,7 @@ int main(int argc, char *argv[])
     else if (strcmp(command, "view")             == 0) cmd_view(district, role, user, extra);
     else if (strcmp(command, "remove_report")    == 0) cmd_remove_report(district, role, user, extra);
     else if (strcmp(command, "update_threshold") == 0) cmd_update_threshold(district, role, user, extra);
+    else if (strcmp(command, "remove_district")  == 0) cmd_remove_district(district, role, user);
     else if (strcmp(command, "filter")           == 0) cmd_filter(district, role, user, filter_count, argv + filter_start);
 
     return 0;
