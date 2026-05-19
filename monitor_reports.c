@@ -8,53 +8,88 @@
 
 #define PID_FILE ".monitor_pid"
 
+/*
+ * Phase 3: Structured message format for hub_mon to parse.
+ *
+ *   TYPE:message text\n
+ *
+ * Types used:
+ *   ERROR   - fatal startup error (monitor exiting immediately)
+ *   INFO    - general status / startup message
+ *   REPORT  - a new report was added (SIGUSR1)
+ *   STOP    - monitor is shutting down gracefully
+ *
+ * Messages are written with a single write() call so they arrive atomically
+ * on the pipe.
+ */
+
 volatile sig_atomic_t keep_running = 1;
 
 /* ── Signal Handlers ─────────────────────────────────────────────────────── */
 
 void handle_sigint(int sig)
 {
-    /* Tell the main loop to exit */
+    (void)sig;
     keep_running = 0;
-    
-    /* Safely write to stdout inside a signal handler */
-    const char *msg = "\n[monitor] SIGINT received. Shutting down...\n";
+    /* Signal-safe; hub_mon reads "STOP:" prefix to know monitor ended */
+    const char *msg = "STOP:SIGINT received. Shutting down.\n";
     write(STDOUT_FILENO, msg, strlen(msg));
 }
 
 void handle_sigusr1(int sig)
 {
-    /* Safely write to stdout inside a signal handler */
-    const char *msg = "[monitor] SIGUSR1 received: A new report has been added.\n";
+    (void)sig;
+    const char *msg = "REPORT:A new report has been added.\n";
     write(STDOUT_FILENO, msg, strlen(msg));
 }
 
 /* ── Write PID to .monitor_pid ───────────────────────────────────────────── */
 void write_pid_file(void)
 {
-    /* O_TRUNC overwrites the file if it already exists */
     int fd = open(PID_FILE, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) {
-        perror("open .monitor_pid");
+        const char *msg = "ERROR:Could not create .monitor_pid file.\n";
+        write(STDOUT_FILENO, msg, strlen(msg));
         exit(1);
     }
     char buf[32];
     snprintf(buf, sizeof(buf), "%d\n", getpid());
     write(fd, buf, strlen(buf));
     close(fd);
-    printf("[monitor] Started. PID %d written to %s\n", getpid(), PID_FILE);
 }
 
 /* ── Delete .monitor_pid on exit ─────────────────────────────────────────── */
 void delete_pid_file(void)
 {
     unlink(PID_FILE);
-    printf("[monitor] PID file removed. Goodbye.\n");
 }
 
 /* ── Main ────────────────────────────────────────────────────────────────── */
 int main(void)
 {
+    /*
+     * Phase 3: Check if another monitor is already running.
+     * If .monitor_pid exists and that PID is alive, send an ERROR message
+     * through stdout (the pipe set up by hub_mon) and exit immediately.
+     */
+    int pid_fd = open(PID_FILE, O_RDONLY);
+    if (pid_fd >= 0) {
+        char buf[32] = {0};
+        int n = read(pid_fd, buf, sizeof(buf) - 1);
+        close(pid_fd);
+        if (n > 0) {
+            pid_t existing = (pid_t)atoi(buf);
+            if (existing > 0 && kill(existing, 0) == 0) {
+                char errmsg[128];
+                snprintf(errmsg, sizeof(errmsg),
+                         "ERROR:Monitor already running with PID %d.\n",
+                         (int)existing);
+                write(STDOUT_FILENO, errmsg, strlen(errmsg));
+                exit(1);
+            }
+        }
+    }
+
     /* Set up sigaction for SIGINT */
     struct sigaction sa_int;
     memset(&sa_int, 0, sizeof(sa_int));
@@ -62,7 +97,8 @@ int main(void)
     sigemptyset(&sa_int.sa_mask);
     sa_int.sa_flags = 0;
     if (sigaction(SIGINT, &sa_int, NULL) == -1) {
-        perror("sigaction SIGINT");
+        const char *msg = "ERROR:sigaction SIGINT failed.\n";
+        write(STDOUT_FILENO, msg, strlen(msg));
         exit(1);
     }
 
@@ -73,19 +109,22 @@ int main(void)
     sigemptyset(&sa_usr1.sa_mask);
     sa_usr1.sa_flags = 0;
     if (sigaction(SIGUSR1, &sa_usr1, NULL) == -1) {
-        perror("sigaction SIGUSR1");
+        const char *msg = "ERROR:sigaction SIGUSR1 failed.\n";
+        write(STDOUT_FILENO, msg, strlen(msg));
         exit(1);
     }
 
     write_pid_file();
 
-    printf("[monitor] Running. Press Ctrl+C to stop.\n");
-    
-    /* keep_running is changed to 0 when SIGINT is caught */
+    char startmsg[64];
+    snprintf(startmsg, sizeof(startmsg), "INFO:Monitor started. PID %d.\n", getpid());
+    write(STDOUT_FILENO, startmsg, strlen(startmsg));
+
     while (keep_running) {
         pause(); /* sleep until a signal arrives */
     }
 
     delete_pid_file();
+    /* STOP message already written from inside handle_sigint */
     return 0;
 }
