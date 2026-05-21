@@ -1,20 +1,19 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <sys/stat.h>
+#include <fcntl.h> // open()
+#include <unistd.h> //unix standard
+#include <sys/stat.h> // struct stat define
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <signal.h>
-#include <time.h>
+#include <time.h> // for time_t
 
 /* ── Constants ───────────────────────────────────────────────────────────── */
 
-#define NAME_LEN      64
-#define CATEGORY_LEN  32
-#define DESC_LEN      128
-#define DISTRICTS_DIR "districts"
+#define NAME_LEN      64 //for name
+#define CATEGORY_LEN  32 //"flooding" "road"
+#define DESC_LEN      128 // description
 #define PID_FILE      ".monitor_pid"
 
 /* ── Report struct ───────────────────────────────────────────────────────── */
@@ -30,57 +29,57 @@ typedef struct {
     char   description[DESC_LEN];
 } Report;
 
-/* ── District setup ──────────────────────────────────────────────────────── */
+// Setup for districts  
 
-void ensure_district(const char *district)
+void ensure_district(const char *district) //building the district
 {
-    struct stat st;
+    struct stat st; // buffer for innode info???
     char path[512];
 
-    /* districts/ root folder */
-    if (stat(DISTRICTS_DIR, &st) < 0) {
-        if (mkdir(DISTRICTS_DIR, 0750) < 0) { perror("mkdir districts"); exit(1); }
-    }
-    chmod(DISTRICTS_DIR, 0750);
-
-    /* districts/<district>/ */
-    snprintf(path, sizeof(path), "%s/%s", DISTRICTS_DIR, district);
+    snprintf(path, sizeof(path), "%s", district);
     if (stat(path, &st) < 0) {
         if (mkdir(path, 0750) < 0) { perror("mkdir district"); exit(1); }
     }
     chmod(path, 0750);
 
-    /* district.cfg — 640 */
-    snprintf(path, sizeof(path), "%s/%s/district.cfg", DISTRICTS_DIR, district);
+    snprintf(path, sizeof(path), "%s/reports.dat", district);
+    if(stat(path, &st)<0){
+        int fd = open(path, O_WRONLY | O_CREAT, 0664);
+        if (fd < 0) { perror("open logged_district"); exit(1); }
+        close(fd);
+        chmod(path, 0664);
+    }    
+    
+
+    snprintf(path, sizeof(path), "%s/district.cfg", district);
     if (stat(path, &st) < 0) {
         int fd = open(path, O_WRONLY | O_CREAT, 0640);
         if (fd < 0) { perror("open district.cfg"); exit(1); }
         write(fd, "threshold=1\n", 12);
         close(fd);
     }
-    chmod(path, 0640);
+    chmod(path, 0640); // district.cfg
 
-    /* logged_district — 644 */
-    snprintf(path, sizeof(path), "%s/%s/logged_district", DISTRICTS_DIR, district);
+    
+    snprintf(path, sizeof(path), "%s/logged_district",  district);
     if (stat(path, &st) < 0) {
         int fd = open(path, O_WRONLY | O_CREAT, 0644);
         if (fd < 0) { perror("open logged_district"); exit(1); }
         close(fd);
     }
-    chmod(path, 0644);
+    chmod(path, 0644); //logged_district
 }
 
-/* ── Log an action ───────────────────────────────────────────────────────── */
+// Log an action 
 
-void log_action(const char *district, const char *role,
-                const char *user, const char *action)
+void log_action(const char *district, const char *role, const char *user, const char *action)
 {
     char path[512];
-    snprintf(path, sizeof(path), "%s/%s/logged_district", DISTRICTS_DIR, district);
+    snprintf(path, sizeof(path), "%s/logged_district",  district);
 
     int fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0644);
-    if (fd < 0) return;
-    chmod(path, 0644);
+    if (fd < 0) return; 
+    chmod(path, 0644); 
 
     char buf[256];
     time_t now = time(NULL);
@@ -89,28 +88,29 @@ void log_action(const char *district, const char *role,
     close(fd);
 }
 
-/* ── Permission bits to string ───────────────────────────────────────────── */
+// Permission bits to string 
 void mode_to_str(mode_t mode, char out[10])
 {
     out[0] = (mode & S_IRUSR) ? 'r' : '-';
     out[1] = (mode & S_IWUSR) ? 'w' : '-';
-    out[2] = (mode & S_IXUSR) ? 'x' : '-';
+    out[2] = (mode & S_IXUSR) ? 'x' : '-'; //user
     out[3] = (mode & S_IRGRP) ? 'r' : '-';
     out[4] = (mode & S_IWGRP) ? 'w' : '-';
-    out[5] = (mode & S_IXGRP) ? 'x' : '-';
+    out[5] = (mode & S_IXGRP) ? 'x' : '-'; //group
     out[6] = (mode & S_IROTH) ? 'r' : '-';
     out[7] = (mode & S_IWOTH) ? 'w' : '-';
-    out[8] = (mode & S_IXOTH) ? 'x' : '-';
+    out[8] = (mode & S_IXOTH) ? 'x' : '-'; //other
     out[9] = '\0';
 }
 
-/* ── Permission check ────────────────────────────────────────────────────── */
+// Permission check 
 int check_permission(const char *path, const char *role, int need_read, int need_write)
 {
     struct stat st;
     if (stat(path, &st) < 0) return 1; /* file doesn't exist yet, allow creation */
 
     mode_t m = st.st_mode;
+    //110110100 reports.dat
     int ok = 1;
 
     if (strcmp(role, "manager") == 0) {
@@ -133,27 +133,31 @@ int check_permission(const char *path, const char *role, int need_read, int need
     return ok;
 }
 
-/* ── Symlink helpers ─────────────────────────────────────────────────────── */
+// Symlink helpers 
 void update_symlink(const char *district)
 {
     char link_name[512];
     char target[512];
+    char abs_target[1024];  // large enough for cwd + "/" + target
+    char cwd[512];          // match target size
 
-    snprintf(link_name, sizeof(link_name), "%s/active_reports-%s", DISTRICTS_DIR, district);
-    snprintf(target,    sizeof(target),    "%s/reports.dat",  district);
+    snprintf(link_name, sizeof(link_name), "active_reports-%s", district);
+    snprintf(target, sizeof(target), "%s/reports.dat", district);
+    printf("%s ", target);
+
+    if (realpath(target, abs_target) == NULL) {
+        getcwd(cwd, sizeof(cwd));
+        snprintf(abs_target, sizeof(abs_target), "%s/%s", cwd, target);
+    }
+    printf("%s ", abs_target);
 
     struct stat lst;
-    if (lstat(link_name, &lst) == 0) {
+    if (lstat(link_name, &lst) == 0)
         unlink(link_name);
-    }
-    symlink(target, link_name);
 
-    struct stat fst;
-    if (stat(link_name, &fst) < 0) {
-        fprintf(stderr, "WARNING: symlink '%s' is dangling (target does not exist yet).\n",
-                link_name);
-    }
+    symlink(abs_target, link_name);
 }
+
 
 /* ── Print one report ────────────────────────────────────────────────────── */
 void print_report(const Report *r)
@@ -181,25 +185,28 @@ void cmd_add(const char *district, const char *role, const char *user)
     ensure_district(district);
 
     char rpath[512];
-    snprintf(rpath, sizeof(rpath), "%s/%s/reports.dat", DISTRICTS_DIR, district);
+    snprintf(rpath, sizeof(rpath), "%s/reports.dat",  district);
 
-    if (!check_permission(rpath, role, 0, 1)) exit(1);
+    if (!check_permission(rpath, role, 0, 1)) exit(1); //both may add reports
 
     Report r;
     memset(&r, 0, sizeof(r));
 
     struct stat st;
-    r.id = (stat(rpath, &st) == 0) ? (int)(st.st_size / sizeof(Report)) + 1 : 1;
+    if(stat(rpath, &st) == 0){
+        r.id=(int)(st.st_size / sizeof(Report)) + 1;
+    }
+    else{
+        r.id=1;
+    }
 
     strncpy(r.inspector, user, NAME_LEN - 1);
     r.timestamp = time(NULL);
 
     printf("Latitude : ");  scanf("%lf", &r.latitude);
     printf("Longitude: ");  scanf("%lf", &r.longitude);
-    printf("Category (road/lighting/flooding/other): ");
-    scanf("%31s", r.category);
-    printf("Severity (1=minor 2=moderate 3=critical): ");
-    scanf("%d", &r.severity);
+    printf("Category (road/lighting/flooding/other): "); scanf("%31s", r.category);
+    printf("Severity (1=minor 2=moderate 3=critical): "); scanf("%d", &r.severity);
 
     int c;
     while ((c = getchar()) != '\n' && c != EOF);
@@ -209,9 +216,10 @@ void cmd_add(const char *district, const char *role, const char *user)
     if (len > 0 && r.description[len - 1] == '\n')
         r.description[len - 1] = '\0';
 
+    
     int fd = open(rpath, O_WRONLY | O_CREAT | O_APPEND, 0664);
     if (fd < 0) { perror("open reports.dat"); exit(1); }
-    chmod(rpath, 0664);
+    chmod(rpath, 0664);  // reports.dat permissions
     write(fd, &r, sizeof(r));
     close(fd);
 
@@ -253,7 +261,7 @@ void cmd_remove_district(const char *district, const char *role, const char *use
     }
 
     char target_dir[512];
-    snprintf(target_dir, sizeof(target_dir), "%s/%s", DISTRICTS_DIR, district);
+    snprintf(target_dir, sizeof(target_dir), "%s", district);
 
     /* Verify district directory actually exists before trying to delete */
     struct stat st;
@@ -283,7 +291,7 @@ void cmd_remove_district(const char *district, const char *role, const char *use
             
             /* Remove the corresponding active_reports-* symlink */
             char link_name[512];
-            snprintf(link_name, sizeof(link_name), "%s/active_reports-%s", DISTRICTS_DIR, district);
+            snprintf(link_name, sizeof(link_name), "active_reports-%s", district);
             unlink(link_name);
         } else {
             fprintf(stderr, "ERROR: Failed to remove district '%s'.\n", district);
@@ -295,7 +303,7 @@ void cmd_remove_district(const char *district, const char *role, const char *use
 void cmd_list(const char *district, const char *role, const char *user)
 {
     char rpath[512];
-    snprintf(rpath, sizeof(rpath), "%s/%s/reports.dat", DISTRICTS_DIR, district);
+    snprintf(rpath, sizeof(rpath), "%s/reports.dat",  district);
 
     if (!check_permission(rpath, role, 1, 0)) exit(1);
 
@@ -307,6 +315,7 @@ void cmd_list(const char *district, const char *role, const char *user)
 
     char sym[10];
     mode_to_str(st.st_mode, sym);
+    printf("\n%d\n",st.st_mode);
     char tmbuf[64];
     struct tm *tm = localtime(&st.st_mtime);
     strftime(tmbuf, sizeof(tmbuf), "%Y-%m-%d %H:%M:%S", tm);
@@ -334,7 +343,7 @@ void cmd_list(const char *district, const char *role, const char *user)
 void cmd_view(const char *district, const char *role, const char *user, int report_id)
 {
     char rpath[512];
-    snprintf(rpath, sizeof(rpath), "%s/%s/reports.dat", DISTRICTS_DIR, district);
+    snprintf(rpath, sizeof(rpath), "%s/reports.dat",  district);
 
     if (!check_permission(rpath, role, 1, 0)) exit(1);
 
@@ -366,7 +375,7 @@ void cmd_remove_report(const char *district, const char *role,
     }
 
     char rpath[512];
-    snprintf(rpath, sizeof(rpath), "%s/%s/reports.dat", DISTRICTS_DIR, district);
+    snprintf(rpath, sizeof(rpath), "%s/reports.dat",  district);
 
     if (!check_permission(rpath, role, 1, 1)) exit(1);
 
@@ -417,7 +426,7 @@ void cmd_update_threshold(const char *district, const char *role,
     ensure_district(district);
 
     char cfg[512];
-    snprintf(cfg, sizeof(cfg), "%s/%s/district.cfg", DISTRICTS_DIR, district);
+    snprintf(cfg, sizeof(cfg), "%s/district.cfg", district);
 
     struct stat st;
     if (stat(cfg, &st) == 0) {
@@ -514,7 +523,7 @@ void cmd_filter(const char *district, const char *role, const char *user,
                 int cond_count, char **conditions)
 {
     char rpath[512];
-    snprintf(rpath, sizeof(rpath), "%s/%s/reports.dat", DISTRICTS_DIR, district);
+    snprintf(rpath, sizeof(rpath), "%s/reports.dat", district);
 
     if (!check_permission(rpath, role, 1, 0)) exit(1);
 
@@ -585,9 +594,9 @@ int main(int argc, char *argv[])
     const char *user     = NULL;
     const char *command  = NULL;
     const char *district = NULL;
-    int         extra    = 0;
-    int         filter_start = 0;
-    int         filter_count = 0;
+    int extra = 0;
+    int filter_start = 0;
+    int filter_count = 0;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--role") == 0 && i + 1 < argc) {

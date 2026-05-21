@@ -35,7 +35,7 @@
 #include <signal.h>
 #include <errno.h>
 
-#define DISTRICTS_DIR "districts"
+/* ── Constants ───────────────────────────────────────────────────────────── */
 #define MONITOR_BIN   "./monitor_reports"
 #define SCORER_BIN    "./scorer"
 #define MAX_LINE      1024
@@ -187,7 +187,7 @@ static void cmd_calculate_scores(int district_count, char **districts)
 
         /* Build path: districts/<district> */
         char district_path[512];
-        snprintf(district_path, sizeof(district_path), "%s/%s", DISTRICTS_DIR, district);
+        snprintf(district_path, sizeof(district_path), "%s",  district);
 
         /* Check the district exists */
         struct stat st;
