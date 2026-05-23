@@ -1,8 +1,19 @@
-1779391149	Ana	manager	add (monitor could not be informed)
-1779391216	Maria	inspector	add (monitor could not be informed)
-1779391255	Ana	manager	list
-1779391469	Ana	manager	list
-1779391527	Ana	manager	list
-1779391837	Ana	manager	list
-1779392076	Ana	manager	list
-1779392266	Ana	manager	view
+1779393102	Maria	manager	add (monitor notified successfully)
+1779393149	Maria	manager	add (monitor notified successfully)
+1779393210	Ana	inspector	add (monitor notified successfully)
+1779393223	Ana	inspector	list
+1779393382	Ana	inspector	view
+1779393503	Maria	manager	update_threshold
+1779393694	Maria	manager	filter
+1779393711	Maria	manager	filter
+1779393742	Maria	manager	remove_report
+1779393754	Maria	manager	list
+1779425183	Maria	manager	add (monitor could not be informed)
+1779425336	Maria	manager	view
+1779425379	Maria	manager	add (monitor notified successfully)
+1779425453	Maria	manager	list
+1779425472	Maria	manager	remove_report
+1779425481	Maria	manager	list
+1779428335	Maria	manager	list
+1779428376	Maria	manager	remove_report
+1779428379	Maria	manager	list

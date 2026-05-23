@@ -1,29 +1,3 @@
-/*
- * city_hub.c  –  Phase 3
- *
- * Interactive command-line hub.  Understands two commands:
- *
- *   start_monitor
- *       Creates a background child process (hub_mon).  hub_mon in turn forks
- *       the monitor_reports executable.  Before forking the monitor, hub_mon
- *       creates a pipe so that the monitor's stdout is redirected into the
- *       pipe.  hub_mon reads from the read end and relays the monitor's
- *       messages to the user.  If the monitor reports it is already running
- *       (ERROR: prefix) or that it has stopped (STOP: prefix), hub_mon prints
- *       a specific message and exits.
- *
- *   calculate_scores <district1> [<district2> ...]
- *       For each district in the list, city_hub forks a scorer process.
- *       dup2() is used to redirect each scorer's stdout into a pipe.
- *       city_hub collects and prints a combined workload report.
- *
- *   quit / exit
- *       Exit city_hub.
- *
- * System calls used: pipe(), fork(), dup2(), exec*(), read(), write(),
- *                    waitpid(), open(), close()
- */
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -35,15 +9,11 @@
 #include <signal.h>
 #include <errno.h>
 
-/* ── Constants ───────────────────────────────────────────────────────────── */
 #define MONITOR_BIN   "./monitor_reports"
 #define SCORER_BIN    "./scorer"
 #define MAX_LINE      1024
 #define MAX_ARGS      64
 
-/* ════════════════════════════════════════════════════════════════════════════
-   start_monitor
-   ════════════════════════════════════════════════════════════════════════════ */
 
 /*
  * hub_mon_run() — this function is called inside the hub_mon child process.
@@ -52,7 +22,7 @@
  */
 static void hub_mon_run(void)
 {
-    int pipefd[2];
+    int pipefd[2]; // the 2 ends of a pipe
     if (pipe(pipefd) < 0) {
         perror("[hub_mon] pipe");
         exit(1);
@@ -65,14 +35,13 @@ static void hub_mon_run(void)
     }
 
     if (mon_pid == 0) {
-        /* ── monitor child ── */
-        /* Redirect stdout → pipe write end */
-        close(pipefd[0]);                      /* close read end  */
+        //monitor child
+        close(pipefd[0]);                      
         if (dup2(pipefd[1], STDOUT_FILENO) < 0) {
             perror("dup2 monitor stdout");
             exit(1);
         }
-        close(pipefd[1]);                      /* original write end no longer needed */
+        close(pipefd[1]);                      
 
         execl(MONITOR_BIN, MONITOR_BIN, NULL);
         perror("execl monitor_reports");
@@ -161,10 +130,6 @@ static void cmd_start_monitor(void)
     printf("[hub] Monitor background process started (hub_mon PID %d).\n",
            (int)hub_mon_pid);
 }
-
-/* ════════════════════════════════════════════════════════════════════════════
-   calculate_scores
-   ════════════════════════════════════════════════════════════════════════════ */
 
 /*
  * For each district in the argument list, fork a scorer process, redirect its
@@ -272,9 +237,6 @@ static void cmd_calculate_scores(int district_count, char **districts)
     }
 }
 
-/* ════════════════════════════════════════════════════════════════════════════
-   Main interactive loop
-   ════════════════════════════════════════════════════════════════════════════ */
 
 int main(void)
 {

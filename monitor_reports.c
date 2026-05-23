@@ -8,24 +8,9 @@
 
 #define PID_FILE ".monitor_pid"
 
-/*
- * Phase 3: Structured message format for hub_mon to parse.
- *
- *   TYPE:message text\n
- *
- * Types used:
- *   ERROR   - fatal startup error (monitor exiting immediately)
- *   INFO    - general status / startup message
- *   REPORT  - a new report was added (SIGUSR1)
- *   STOP    - monitor is shutting down gracefully
- *
- * Messages are written with a single write() call so they arrive atomically
- * on the pipe.
- */
 
 volatile sig_atomic_t keep_running = 1;
 
-/* ── Signal Handlers ─────────────────────────────────────────────────────── */
 
 void handle_sigint(int sig)
 {
@@ -43,7 +28,6 @@ void handle_sigusr1(int sig)
     write(STDOUT_FILENO, msg, strlen(msg));
 }
 
-/* ── Write PID to .monitor_pid ───────────────────────────────────────────── */
 void write_pid_file(void)
 {
     int fd = open(PID_FILE, O_WRONLY | O_CREAT | O_TRUNC, 0644);
@@ -58,20 +42,16 @@ void write_pid_file(void)
     close(fd);
 }
 
-/* ── Delete .monitor_pid on exit ─────────────────────────────────────────── */
+
 void delete_pid_file(void)
 {
     unlink(PID_FILE);
 }
 
-/* ── Main ────────────────────────────────────────────────────────────────── */
+/
 int main(void)
 {
-    /*
-     * Phase 3: Check if another monitor is already running.
-     * If .monitor_pid exists and that PID is alive, send an ERROR message
-     * through stdout (the pipe set up by hub_mon) and exit immediately.
-     */
+    
     int pid_fd = open(PID_FILE, O_RDONLY);
     if (pid_fd >= 0) {
         char buf[32] = {0};
@@ -90,7 +70,6 @@ int main(void)
         }
     }
 
-    /* Set up sigaction for SIGINT */
     struct sigaction sa_int;
     memset(&sa_int, 0, sizeof(sa_int));
     sa_int.sa_handler = handle_sigint;
@@ -102,7 +81,6 @@ int main(void)
         exit(1);
     }
 
-    /* Set up sigaction for SIGUSR1 */
     struct sigaction sa_usr1;
     memset(&sa_usr1, 0, sizeof(sa_usr1));
     sa_usr1.sa_handler = handle_sigusr1;

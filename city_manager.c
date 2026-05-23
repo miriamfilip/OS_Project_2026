@@ -9,14 +9,12 @@
 #include <signal.h>
 #include <time.h> // for time_t
 
-/* ── Constants ───────────────────────────────────────────────────────────── */
 
 #define NAME_LEN      64 //for name
 #define CATEGORY_LEN  32 //"flooding" "road"
 #define DESC_LEN      128 // description
 #define PID_FILE      ".monitor_pid"
 
-/* ── Report struct ───────────────────────────────────────────────────────── */
 
 typedef struct {
     int    id;
@@ -47,7 +45,7 @@ void ensure_district(const char *district) //building the district
         int fd = open(path, O_WRONLY | O_CREAT, 0664);
         if (fd < 0) { perror("open logged_district"); exit(1); }
         close(fd);
-        chmod(path, 0664);
+        chmod(path, 0664); // report.dat
     }    
     
 
@@ -71,7 +69,6 @@ void ensure_district(const char *district) //building the district
 }
 
 // Log an action 
-
 void log_action(const char *district, const char *role, const char *user, const char *action)
 {
     char path[512];
@@ -138,28 +135,26 @@ void update_symlink(const char *district)
 {
     char link_name[512];
     char target[512];
-    char abs_target[1024];  // large enough for cwd + "/" + target
-    char cwd[512];          // match target size
+    // char abs_target[1024];  // large enough for cwd + "/" + target
+    // char cwd[512];          // match target size
 
     snprintf(link_name, sizeof(link_name), "active_reports-%s", district);
     snprintf(target, sizeof(target), "%s/reports.dat", district);
-    printf("%s ", target);
+    //printf("%s ", target);
 
-    if (realpath(target, abs_target) == NULL) {
-        getcwd(cwd, sizeof(cwd));
-        snprintf(abs_target, sizeof(abs_target), "%s/%s", cwd, target);
-    }
-    printf("%s ", abs_target);
+    // if (realpath(target, abs_target) == NULL) {
+    //     getcwd(cwd, sizeof(cwd));
+    //     snprintf(abs_target, sizeof(abs_target), "%s/%s", cwd, target);
+    // }
+    // printf("%s ", abs_target);
 
     struct stat lst;
-    if (lstat(link_name, &lst) == 0)
-        unlink(link_name);
-
-    symlink(abs_target, link_name);
+    if (lstat(link_name, &lst) == 0){
+         unlink(link_name);
+    }
+    symlink(target, link_name);
 }
 
-
-/* ── Print one report ────────────────────────────────────────────────────── */
 void print_report(const Report *r)
 {
     char tsbuf[64];
@@ -175,11 +170,9 @@ void print_report(const Report *r)
     printf("  Desc      : %s\n",           r->description);
 }
 
-/* ════════════════════════════════════════════════════════════════════════════
-   COMMANDS
-   ════════════════════════════════════════════════════════════════════════════ */
+// Commands
 
-/* ── add ─────────────────────────────────────────────────────────────────── */
+//add
 void cmd_add(const char *district, const char *role, const char *user)
 {
     ensure_district(district);
@@ -226,7 +219,7 @@ void cmd_add(const char *district, const char *role, const char *user)
     update_symlink(district);
     printf("Report %d added to district '%s'.\n", r.id, district);
 
-    /* Phase 2: Notify the monitor process */
+    /// monitor process notify
     int monitor_pid = -1;
     int pid_fd = open(PID_FILE, O_RDONLY);
     int notified = 0;
@@ -252,44 +245,38 @@ void cmd_add(const char *district, const char *role, const char *user)
     log_action(district, role, user, action_log);
 }
 
-/* ── remove_district (Phase 2) ───────────────────────────────────────────── */
+// remove district
 void cmd_remove_district(const char *district, const char *role, const char *user)
 {
     if (strcmp(role, "manager") != 0) {
-        fprintf(stderr, "ERROR: only managers can remove districts.\n");
+        fprintf(stderr,"ERROR: only managers can remove districts.\n");
         exit(1);
     }
 
     char target_dir[512];
     snprintf(target_dir, sizeof(target_dir), "%s", district);
 
-    /* Verify district directory actually exists before trying to delete */
     struct stat st;
     if (stat(target_dir, &st) < 0) {
-        fprintf(stderr, "ERROR: District '%s' does not exist.\n", district);
+        fprintf(stderr,"ERROR: District '%s' does not exist.\n", district);
         exit(1);
     }
 
-    /* Use fork and exec to run: rm -rf districts/<district> */
-    pid_t pid = fork();
+    pid_t pid = fork(); // child- parent process
     if (pid < 0) {
-        perror("fork");
+        perror("fork"); 
         exit(1);
     } else if (pid == 0) {
-        /* Child process */
         execlp("rm", "rm", "-rf", target_dir, NULL);
-        /* If execlp returns, it failed */
         perror("execlp");
         exit(1);
     } else {
-        /* Parent process */
         int status;
         waitpid(pid, &status, 0);
         
         if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
             printf("District '%s' and all its contents have been removed.\n", district);
             
-            /* Remove the corresponding active_reports-* symlink */
             char link_name[512];
             snprintf(link_name, sizeof(link_name), "active_reports-%s", district);
             unlink(link_name);
@@ -299,7 +286,7 @@ void cmd_remove_district(const char *district, const char *role, const char *use
     }
 }
 
-/* ── list ────────────────────────────────────────────────────────────────── */
+// list
 void cmd_list(const char *district, const char *role, const char *user)
 {
     char rpath[512];
@@ -315,7 +302,7 @@ void cmd_list(const char *district, const char *role, const char *user)
 
     char sym[10];
     mode_to_str(st.st_mode, sym);
-    printf("\n%d\n",st.st_mode);
+    // printf("\n%d\n",st.st_mode);
     char tmbuf[64];
     struct tm *tm = localtime(&st.st_mtime);
     strftime(tmbuf, sizeof(tmbuf), "%Y-%m-%d %H:%M:%S", tm);
@@ -339,7 +326,7 @@ void cmd_list(const char *district, const char *role, const char *user)
     log_action(district, role, user, "list");
 }
 
-/* ── view ────────────────────────────────────────────────────────────────── */
+// view
 void cmd_view(const char *district, const char *role, const char *user, int report_id)
 {
     char rpath[512];
@@ -365,9 +352,8 @@ void cmd_view(const char *district, const char *role, const char *user, int repo
     log_action(district, role, user, "view");
 }
 
-/* ── remove_report ───────────────────────────────────────────────────────── */
-void cmd_remove_report(const char *district, const char *role,
-                        const char *user, int report_id)
+// remove report
+void cmd_remove_report(const char *district, const char *role, const char *user, int report_id)
 {
     if (strcmp(role, "manager") != 0) {
         fprintf(stderr, "ERROR: only managers can remove reports.\n");
@@ -414,7 +400,7 @@ void cmd_remove_report(const char *district, const char *role,
     }
 }
 
-/* ── update_threshold ────────────────────────────────────────────────────── */
+// update threshold
 void cmd_update_threshold(const char *district, const char *role,
                            const char *user, int value)
 {
@@ -427,7 +413,7 @@ void cmd_update_threshold(const char *district, const char *role,
 
     char cfg[512];
     snprintf(cfg, sizeof(cfg), "%s/district.cfg", district);
-
+    //110100000
     struct stat st;
     if (stat(cfg, &st) == 0) {
         mode_t perms = st.st_mode & 0777;
@@ -443,7 +429,7 @@ void cmd_update_threshold(const char *district, const char *role,
 
     if (!check_permission(cfg, role, 0, 1)) exit(1);
 
-    int fd = open(cfg, O_WRONLY | O_TRUNC | O_CREAT, 0640);
+    int fd = open(cfg, O_WRONLY | O_TRUNC | O_CREAT, 0640); //creat
     if (fd < 0) { perror("open district.cfg"); exit(1); }
     chmod(cfg, 0640);
 
@@ -518,7 +504,7 @@ int match_condition(Report *r, const char *field, const char *op, const char *va
     return 0;
 }
 
-/* ── filter ──────────────────────────────────────────────────────────────── */
+// filter
 void cmd_filter(const char *district, const char *role, const char *user,
                 int cond_count, char **conditions)
 {
@@ -571,7 +557,7 @@ void cmd_filter(const char *district, const char *role, const char *user,
     log_action(district, role, user, "filter");
 }
 
-/* ── usage ───────────────────────────────────────────────────────────────── */
+// usage when format for input not correct
 void usage(void)
 {
     fprintf(stderr,
@@ -587,7 +573,6 @@ void usage(void)
     exit(1);
 }
 
-/* ── main ────────────────────────────────────────────────────────────────── */
 int main(int argc, char *argv[])
 {
     const char *role     = NULL;

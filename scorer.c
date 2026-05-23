@@ -1,16 +1,7 @@
-/*
- * scorer.c  –  Phase 3 helper
- *
- * Usage:  scorer <district_path>
- *
- * Reads all Report records from <district_path>/reports.dat and prints,
- * for each inspector found, the sum of severity levels (workload score).
- *
- * Output format (one line per inspector, printed to stdout):
- *   INSPECTOR:<name> SCORE:<total_severity>
- *
- * city_hub pipes this output back via dup2().
- */
+//  reads all Report records from <district_path>/reports.dat and prints,
+//    INSPECTOR:<name> SCORE:<total_severity>
+// city_hub pipes this output back via dup2().
+
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,7 +11,6 @@
 #include <sys/stat.h>
 #include <time.h>
 
-/* Must match the Report struct in city_manager.c exactly */
 #define NAME_LEN      64
 #define CATEGORY_LEN  32
 #define DESC_LEN      128
@@ -36,7 +26,6 @@ typedef struct {
     char   description[DESC_LEN];
 } Report;
 
-/* Simple dynamic table of (name, score) pairs */
 #define MAX_INSPECTORS 256
 
 typedef struct {
@@ -56,7 +45,6 @@ int main(int argc, char *argv[])
 
     int fd = open(rpath, O_RDONLY);
     if (fd < 0) {
-        /* No reports file — that is fine, just print nothing */
         exit(0);
     }
 
